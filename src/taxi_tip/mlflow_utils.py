@@ -1,0 +1,48 @@
+"""Funciones de apoyo para registrar el modelo de propinas en MLflow."""
+import mlflow
+import skops.io as sio
+from mlflow import MlflowClient
+from mlflow.exceptions import MlflowException
+
+MODEL_NAME = 'taxi_tip_model'
+
+
+def get_or_create_experiment(experiment_name: str) -> str:
+    """
+    Devuelve el id del experimento y lo crea si no existe.
+
+    :param experiment_name: Nombre del experimento en MLflow.
+    :return: Id del experimento.
+    """
+    if experiment := mlflow.get_experiment_by_name(experiment_name):
+        return experiment.experiment_id
+    return mlflow.create_experiment(experiment_name)
+
+
+def skops_trusted_types(model) -> list[str]:
+    """
+    Lista los tipos que skops no carga por defecto para este modelo.
+
+    MLflow 3 guarda los modelos de sklearn con skops, que solo carga tipos marcados como
+    confiables. Además de nuestro ``TaxiFeatureEngineer``, aparecen tipos internos de
+    sklearn (los árboles del HistGradientBoosting, la pérdida, etc.). El modelo es nuestro,
+    así que los marcamos todos.
+
+    :param model: Pipeline ya ajustado.
+    :return: Nombres completos de los tipos a confiar.
+    """
+    return sio.get_untrusted_types(data=sio.dumps(model))
+
+
+def load_champion(model_name: str = MODEL_NAME):
+    """
+    Carga el champion actual del registro.
+
+    :param model_name: Nombre del modelo registrado.
+    :return: Tupla ``(versión, modelo)``, o ``None`` si todavía no hay champion.
+    """
+    try:
+        version = MlflowClient().get_model_version_by_alias(model_name, 'champion').version
+    except MlflowException:
+        return None
+    return int(version), mlflow.sklearn.load_model(f'models:/{model_name}/{version}')

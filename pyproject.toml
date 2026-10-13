@@ -1,0 +1,25 @@
+[project]
+name = "taxi-tip"
+version = "0.1.0"
+description = "Modelo de propinas de Yellow Taxi NYC en producción (TP MLOps1 - CEIA - FIUBA)"
+readme = "README.md"
+requires-python = "==3.12.*"
+# Mismas versiones que la imagen de Airflow, para que el modelo que se entrena en la
+# notebook se cargue igual en Airflow y en la API.
+dependencies = [
+    "awswrangler==3.17.1",
+    "ipykernel>=6.29",
+    "jupyter>=1.1.1",
+    "matplotlib>=3.8",
+    "mlflow==3.16.1",
+    "numpy==1.26.4",
+    "optuna>=4.0",
+    "pandas==2.1.4",
+    "pyarrow==16.1.0",
+    "scikit-learn==1.4.2",
+    "skops==0.16.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.8,<0.13"]
+build-backend = "uv_build"
