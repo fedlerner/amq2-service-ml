@@ -116,11 +116,11 @@ def batch_predict_taxi_tips():
 
         import awswrangler as wr
         from airflow.providers.postgres.hooks.postgres import PostgresHook
+        from taxi_common.data import FEATURES, TARGET
 
-        columns = ['month', 'trip_distance', 'duration_min', 'fare_amount', 'recargos',
-                   'PULocationID', 'DOLocationID', 'passenger_count', 'hour', 'dow',
-                   'RatecodeID', 'VendorID', 'tip_amount', 'tip_amount_pred', 'model_version']
-        df = wr.s3.read_parquet(result["path"])[columns]
+        # Mismo orden que las columnas del COPY de abajo
+        columns = ['month', *FEATURES, TARGET, 'tip_amount_pred', 'model_version']
+        df = wr.s3.read_parquet(result["path"], columns=columns)[columns]
 
         create_sql = f"""
             CREATE TABLE IF NOT EXISTS {TABLE} (

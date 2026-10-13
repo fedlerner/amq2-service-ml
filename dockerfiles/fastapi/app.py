@@ -204,7 +204,8 @@ def _predict(trips: list[TripFeatures]) -> tuple[list[float], int]:
     :return: Propinas en USD (redondeadas a centavos y nunca negativas) y la versión usada.
     """
     if state.current is None:
-        state.refresh(force=True)
+        # Sin force: si MLflow está caído o no hay champion, no lo consultamos en cada request
+        state.refresh()
     current = state.current
     if current is None:
         raise HTTPException(

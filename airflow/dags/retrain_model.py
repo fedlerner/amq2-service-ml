@@ -78,25 +78,24 @@ def retrain_taxi_tip_model():
         import awswrangler as wr
         import boto3
         import mlflow
-        import skops.io as sio
         from mlflow.models import infer_signature
         from sklearn.base import clone
         from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
+        from taxi_common.data import FEATURES, TARGET
 
         data_info = json.loads(
             boto3.client("s3").get_object(Bucket="data", Key="taxi/data_info.json")["Body"].read()
         )
         if data_info["month"] != month:
-            raise ValueError(f"El train en S3 es de {data_info['month']}, no de {month}")
+            raise AirflowFailException(f"El train en S3 es de {data_info['month']}, no de {month}")
 
-        features, target = data_info["features"], data_info["target"]
         train = wr.s3.read_parquet("s3://data/taxi/train.parquet")
         test = wr.s3.read_parquet("s3://data/taxi/test.parquet")
-        X_train = train[features].astype("float64")
-        X_test, y_test = test[features].astype("float64"), test[target]
+        X_train = train[FEATURES].astype("float64")
+        X_test, y_test = test[FEATURES].astype("float64"), test[TARGET]
         # Mismo recorte del target que en la notebook: p99,5 del train
-        tip_cap = float(train[target].quantile(0.995))
-        y_train = train[target].clip(lower=0, upper=tip_cap)
+        tip_cap = float(train[TARGET].quantile(0.995))
+        y_train = train[TARGET].clip(lower=0, upper=tip_cap)
 
         mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
@@ -107,6 +106,7 @@ def retrain_taxi_tip_model():
                 f"No hay champion de {MODEL_NAME}: primero hay que correr la notebook del experimento")
         champion = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{champion_version.version}")
         import taxi_tip  # lo deja importable el code_paths del champion
+        from taxi_tip.mlflow_utils import skops_trusted_types
 
         challenger = clone(champion).fit(X_train, y_train)
         y_pred = challenger.predict(X_test)
@@ -129,7 +129,7 @@ def retrain_taxi_tip_model():
                 signature=infer_signature(X_train, challenger.predict(X_train.head(100))),
                 input_example=X_train.head(3),
                 code_paths=[os.path.dirname(taxi_tip.__file__)],
-                skops_trusted_types=sio.get_untrusted_types(data=sio.dumps(challenger)),
+                skops_trusted_types=skops_trusted_types(challenger),
             )
 
         tags = {"modelo": "HistGradientBoostingRegressor", "etl_month": month,

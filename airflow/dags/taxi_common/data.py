@@ -100,7 +100,7 @@ def clean_month(path: str, month: str) -> pd.DataFrame:
 
     # Solo la tarifa estándar (RatecodeID == 1) sigue la relación tarifa-distancia
     incoherente = (df['RatecodeID'] == 1) & (df['fare_amount'] < 2.50 * df['trip_distance'])
-    df = df[~incoherente]
+    df = df[~incoherente].copy()
 
     df['hour'] = df['tpep_pickup_datetime'].dt.hour
     df['dow'] = df['tpep_pickup_datetime'].dt.dayofweek
