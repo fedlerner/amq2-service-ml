@@ -39,7 +39,7 @@ default_args = {
     catchup=False,
     # Todas las corridas escriben los mismos train/test en S3
     max_active_runs=1,
-    params={"month": Param("2026-03", type="string", pattern=r"^\d{4}-\d{2}$",
+    params={"month": Param("2026-03", type="string", pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                            description="Mes de la TLC a procesar (YYYY-MM)")},
     tags=["ETL", "taxi"],
 )

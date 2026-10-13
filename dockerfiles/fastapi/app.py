@@ -4,19 +4,19 @@ API REST que sirve el modelo de propinas de Yellow Taxi NYC.
 Carga ``taxi_tip_model@champion`` desde MLflow. Como el modelo registrado es el pipeline
 completo, la API recibe directamente las 11 columnas del ETL.
 
-Cada ``MODEL_REFRESH_SECONDS`` segundos (como mucho) se fija en segundo plano si cambió el
-champion y, si cambió, lo recarga.
+Cada ``MODEL_REFRESH_SECONDS`` segundos se fija en segundo plano si cambió el champion y, si
+cambió, lo recarga, aunque no lleguen requests.
 """
+import asyncio
 import logging
 import os
 import threading
-import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import mlflow
 import pandas as pd
-from fastapi import BackgroundTasks, FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status
 from mlflow import MlflowClient
 from pydantic import BaseModel, Field, model_validator
 
@@ -42,25 +42,18 @@ class ModelState:
 
     def __init__(self):
         self.current: tuple[object, int] | None = None
-        self._last_check = 0.0
         self._lock = threading.Lock()
 
-    def refresh(self, force: bool = False) -> None:
+    def refresh(self) -> None:
         """
         Carga el champion si todavía no hay modelo o si cambió la versión en el registro.
 
-        No consulta MLflow más de una vez cada ``MODEL_REFRESH_SECONDS`` (salvo ``force``), y
-        si ya hay otro thread chequeando, no hace nada. Si MLflow no responde o no hay
-        champion, deja el modelo que estaba (o ninguno) y lo anota en el log.
-
-        :param force: Chequear aunque no haya pasado el intervalo.
+        Si ya hay otro chequeo en curso, no hace nada. Si MLflow no responde o no hay champion,
+        deja el modelo que estaba (o ninguno) y lo anota en el log.
         """
-        if not force and time.monotonic() - self._last_check < MODEL_REFRESH_SECONDS:
-            return
         if not self._lock.acquire(blocking=False):
             return
         try:
-            self._last_check = time.monotonic()
             latest = int(MlflowClient().get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS).version)
             if self.current is None or self.current[1] != latest:
                 model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{latest}")
@@ -75,12 +68,21 @@ class ModelState:
 state = ModelState()
 
 
+async def refresh_periodically() -> None:
+    """Revisa el registro cada ``MODEL_REFRESH_SECONDS`` segundos, en un thread aparte."""
+    while True:
+        await asyncio.sleep(MODEL_REFRESH_SECONDS)
+        await asyncio.to_thread(state.refresh)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Carga el champion al arrancar el servicio."""
+    """Carga el champion al arrancar y deja corriendo el chequeo periódico."""
     mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    state.refresh(force=True)
+    await asyncio.to_thread(state.refresh)
+    refresher = asyncio.create_task(refresh_periodically())
     yield
+    refresher.cancel()
 
 
 class TripFeatures(BaseModel):
@@ -203,9 +205,6 @@ def _predict(trips: list[TripFeatures]) -> tuple[list[float], int]:
     :param trips: Viajes validados.
     :return: Propinas en USD (redondeadas a centavos y nunca negativas) y la versión usada.
     """
-    if state.current is None:
-        # Sin force: si MLflow está caído o no hay champion, no lo consultamos en cada request
-        state.refresh()
     current = state.current
     if current is None:
         raise HTTPException(
@@ -230,17 +229,14 @@ def read_root() -> APIInfo:
 
 
 @app.post("/predict", response_model=TipPrediction, responses=PREDICT_RESPONSES)
-def predict(request: PredictRequest, background_tasks: BackgroundTasks) -> TipPrediction:
+def predict(request: PredictRequest) -> TipPrediction:
     """Estima la propina de un viaje."""
     tips, version = _predict([request.features])
-    background_tasks.add_task(state.refresh)
     return TipPrediction(tip_amount=tips[0], model_version=version)
 
 
 @app.post("/predict/batch", response_model=TipBatchPrediction, responses=PREDICT_RESPONSES)
-def predict_batch(request: PredictBatchRequest,
-                  background_tasks: BackgroundTasks) -> TipBatchPrediction:
+def predict_batch(request: PredictBatchRequest) -> TipBatchPrediction:
     """Estima la propina de hasta 1000 viajes en una sola llamada."""
     tips, version = _predict(request.trips)
-    background_tasks.add_task(state.refresh)
     return TipBatchPrediction(tip_amounts=tips, model_version=version)

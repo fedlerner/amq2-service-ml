@@ -50,7 +50,7 @@ TABLE = "predicciones_propina"
     dagrun_timeout=datetime.timedelta(minutes=45),
     catchup=False,
     max_active_runs=1,
-    params={"month": Param("2026-04", type="string", pattern=r"^\d{4}-\d{2}$",
+    params={"month": Param("2026-04", type="string", pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                            description="Mes de la TLC a predecir (YYYY-MM)")},
     tags=["batch", "taxi"],
 )

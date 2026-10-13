@@ -43,7 +43,7 @@ MODEL_NAME = "taxi_tip_model"
     catchup=False,
     # Usa los mismos train/test de S3 que el ETL: dos corridas a la vez se pisarían
     max_active_runs=1,
-    params={"month": Param("2026-04", type="string", pattern=r"^\d{4}-\d{2}$",
+    params={"month": Param("2026-04", type="string", pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                            description="Mes de la TLC con el que reentrenar (YYYY-MM)")},
     tags=["retrain", "taxi"],
 )
@@ -179,6 +179,9 @@ def retrain_taxi_tip_model():
 
         client.set_model_version_tag(MODEL_NAME, str(challenger_version),
                                      "mae_champion_mismo_test", str(mae["champion"]))
+        # promote_challenger lo usa para no pisar un champion que no se comparó
+        client.set_model_version_tag(MODEL_NAME, str(challenger_version),
+                                     "champion_comparado", str(champion_version))
         print(f"MAE en el test del mes: champion v{champion_version} {mae['champion']:.4f} | "
               f"challenger v{challenger_version} {mae['challenger']:.4f}")
         return "promote_challenger" if mae["challenger"] < mae["champion"] else "keep_champion"
@@ -189,7 +192,8 @@ def retrain_taxi_tip_model():
         Pasa a champion la versión evaluada y deja la anterior como ``old_champion``.
 
         Usa la versión que llega por XCom y no el alias ``challenger``, por si alguien registró
-        otro challenger (por ejemplo, desde la notebook) mientras corría el DAG.
+        otro challenger (por ejemplo, desde la notebook) mientras corría el DAG. Si el champion
+        cambió después de la evaluación, no promueve: el challenger nunca se comparó con él.
 
         :param challenger_version: Versión registrada del challenger.
         """
@@ -199,6 +203,11 @@ def retrain_taxi_tip_model():
         client = mlflow.MlflowClient()
         old = client.get_model_version_by_alias(MODEL_NAME, "champion").version
         new = str(challenger_version)
+        compared = client.get_model_version(MODEL_NAME, new).tags.get("champion_comparado")
+        if compared != old:
+            raise AirflowFailException(
+                f"El champion pasó a ser la v{old} después de evaluar (se comparó contra la "
+                f"v{compared}): no se promueve la v{new}, hay que volver a correr el DAG")
 
         client.set_registered_model_alias(MODEL_NAME, "old_champion", old)
         if client.get_registered_model(MODEL_NAME).aliases.get("challenger") == new:
