@@ -160,9 +160,9 @@ curl -X POST http://localhost:8800/predict -H 'Content-Type: application/json' -
 | `RatecodeID` | 1 estándar, 2 JFK, 3 Newark, 4 Nassau/Westchester, 5 negociada, 6 grupal, 99 desconocida |
 | `VendorID` | 1 CMT, 2 Curb, 6 Myle, 7 Helix |
 
-Los rangos de distancia, duración y tarifa mínima, y el tope de 100 mph de velocidad media, son los mismos filtros que aplica el ETL. Los demás topes son controles para cortar datos mal cargados.
+Los rangos de distancia, duración y tarifa mínima, el tope de 100 mph de velocidad media y el mínimo de USD 2,50 por milla con tarifa estándar son los mismos filtros que aplica el ETL. Los demás topes son controles para cortar datos mal cargados.
 
-`GET /` devuelve qué versión del modelo está sirviendo y `POST /predict/batch` recibe `{"trips": [...]}` con hasta 1000 viajes. Si un campo está fuera de rango responde 422; si todavía no hay un champion registrado, 503.
+`GET /` devuelve qué versión del modelo está sirviendo y `POST /predict/batch` recibe `{"trips": [...]}` con hasta 1000 viajes. Si un campo está fuera de rango o el viaje no pasa esos filtros, responde 422; si todavía no hay un champion registrado, 503.
 
 ## Configuración
 

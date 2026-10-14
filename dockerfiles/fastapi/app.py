@@ -89,9 +89,9 @@ class TripFeatures(BaseModel):
     """
     Datos de un viaje pagado con tarjeta: las mismas 11 columnas que deja el ETL.
 
-    Los rangos de distancia, duración, tarifa mínima y velocidad son los filtros de limpieza
-    del ETL (viajes fuera de ahí no se usaron para entrenar). Los demás topes son controles de
-    sentido común para cortar datos mal cargados.
+    Los rangos de distancia, duración, tarifa mínima, velocidad y tarifa por milla son los
+    filtros de limpieza del ETL (viajes fuera de ahí no se usaron para entrenar). Los demás
+    topes son controles de sentido común para cortar datos mal cargados.
     """
 
     trip_distance: float = Field(gt=0, le=100, description="Distancia del viaje en millas.")
@@ -117,10 +117,18 @@ class TripFeatures(BaseModel):
     )
 
     @model_validator(mode="after")
-    def check_speed(self):
-        """Rechaza viajes con velocidad media mayor a 100 mph, que el ETL también descarta."""
+    def check_consistency(self):
+        """
+        Rechaza los viajes que el ETL descarta por inconsistentes.
+
+        - Velocidad media mayor a 100 mph.
+        - Tarifa estándar (``RatecodeID`` 1) menor a USD 2,50 por milla.
+        """
         if self.trip_distance / (self.duration_min / 60) > 100:
             raise ValueError("La velocidad media supera 100 mph: revisar distancia y duración.")
+        if self.RatecodeID == 1 and self.fare_amount < 2.5 * self.trip_distance:
+            raise ValueError("Con tarifa estándar (RatecodeID 1) la tarifa no puede ser menor a "
+                             "USD 2,50 por milla: revisar tarifa y distancia.")
         return self
 
     model_config = {
@@ -193,7 +201,9 @@ app = FastAPI(
 )
 
 PREDICT_RESPONSES = {
-    422: {"description": "Algún campo fuera de rango, o velocidad media mayor a 100 mph."},
+    422: {"description": "Algún campo fuera de rango, o un viaje que el ETL descarta por "
+                         "inconsistente (más de 100 mph, o tarifa estándar menor a USD 2,50 "
+                         "por milla)."},
     503: {"model": ErrorMessage, "description": "Todavía no hay un champion en MLflow."},
 }
 

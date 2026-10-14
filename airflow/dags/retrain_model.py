@@ -57,11 +57,13 @@ def retrain_taxi_tip_model():
         poke_interval=15,
         allowed_states=["success"],
         failed_states=["failed"],
-        # Espera en el triggerer en vez de ocupar un slot del worker
-        deferrable=True,
+        # Espera en el worker: en Airflow 3.0.2 la espera diferida (deferrable=True) a veces no
+        # se entera de que el ETL terminó y queda colgada hasta el timeout
+        deferrable=False,
     )
 
-    @task(task_id="train_challenger")
+    # Sin reintentos: si falla después de registrar la versión, un reintento registraría otra
+    @task(task_id="train_challenger", retries=0)
     def train_challenger(month: str) -> int:
         """
         Entrena un challenger con los hiperparámetros del champion y lo registra.

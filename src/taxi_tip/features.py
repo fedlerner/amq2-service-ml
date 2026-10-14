@@ -102,6 +102,11 @@ class TaxiFeatureEngineer(BaseEstimator, TransformerMixin):
     @staticmethod
     def _as_float(X: pd.DataFrame) -> pd.DataFrame:
         """Ordena las columnas como ``RAW_FEATURES`` y las pasa a float."""
+        # Si falta una columna, pd.DataFrame la rellenaría con NaN sin avisar
+        if isinstance(X, pd.DataFrame):
+            missing = [c for c in RAW_FEATURES if c not in X.columns]
+            if missing:
+                raise ValueError(f"Faltan columnas de entrada: {missing}")
         # El ETL guarda enteros; el modelo trabaja todo en float
         return pd.DataFrame(X, columns=RAW_FEATURES).astype('float64')
 
