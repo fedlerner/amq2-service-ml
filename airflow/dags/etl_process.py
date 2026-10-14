@@ -11,8 +11,8 @@ Prepara los datos para el modelo que estima `tip_amount` en viajes pagados con t
 1. **extract_raw_data**: si el mes no está en `s3://data/raw/`, lo baja de la TLC y lo sube.
 2. **clean_data**: aplica las reglas de limpieza de AMq1, calcula `duration_min`, `recargos`,
    `hour` y `dow`, se queda con las 11 features del modelo y toma una muestra.
-3. **split_dataset**: separa train/test, guarda los parquet en `s3://data/taxi/` y registra
-   el run en MLflow.
+3. **split_dataset**: separa train/test, guarda los parquet en `s3://data/taxi/<mes>/` y
+   registra el run en MLflow.
 
 La descarga y la limpieza están en `taxi_common/data.py`, compartido con el DAG de
 predicción en lote. El feature engineering (winsorización, target encoding, dummies, etc.) no
@@ -37,7 +37,7 @@ default_args = {
     schedule=None,
     dagrun_timeout=datetime.timedelta(minutes=45),
     catchup=False,
-    # Todas las corridas escriben los mismos train/test en S3
+    # Dos corridas del mismo mes escribirían los mismos archivos
     max_active_runs=1,
     params={"month": Param("2026-03", type="string", pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                            description="Mes de la TLC a procesar (YYYY-MM)")},
@@ -70,7 +70,7 @@ def process_etl_taxi_data():
         """
         import awswrangler as wr
         from airflow.models import Variable
-        from taxi_common.data import clean_month
+        from taxi_common.data import clean_month, dataset_path
 
         df = clean_month(raw_path, month)
 
@@ -80,7 +80,7 @@ def process_etl_taxi_data():
             df = df.sample(n=sample_size, random_state=random_state).reset_index(drop=True)
         print(f"Muestra para entrenar: {len(df):,} filas")
 
-        clean_path = f"s3://data/taxi/clean/{month}.parquet"
+        clean_path = dataset_path(month, "clean.parquet")
         wr.s3.to_parquet(df, clean_path)
         return clean_path
 
@@ -89,9 +89,8 @@ def process_etl_taxi_data():
         """
         Separa el dataset limpio en train/test y lo deja listo para entrenar.
 
-        Guarda ``s3://data/taxi/train.parquet`` y ``s3://data/taxi/test.parquet`` (siempre
-        el último mes procesado), un JSON con la descripción del dataset en
-        ``s3://data/taxi/data_info.json`` y registra el run en el experimento
+        Guarda ``train.parquet``, ``test.parquet`` y un JSON con la descripción del dataset
+        (``data_info.json``) en ``s3://data/taxi/<mes>/``, y registra el run en el experimento
         ``Taxi Tip ETL`` de MLflow.
 
         :param clean_path: Path en S3 del parquet limpio.
@@ -104,7 +103,7 @@ def process_etl_taxi_data():
         import mlflow
         from airflow.models import Variable
         from sklearn.model_selection import train_test_split
-        from taxi_common.data import TARGET
+        from taxi_common.data import TARGET, dataset_path
 
         df = wr.s3.read_parquet(clean_path)
 
@@ -113,8 +112,8 @@ def process_etl_taxi_data():
 
         train_df, test_df = train_test_split(df, test_size=test_size, random_state=random_state)
 
-        wr.s3.to_parquet(train_df, "s3://data/taxi/train.parquet", index=False)
-        wr.s3.to_parquet(test_df, "s3://data/taxi/test.parquet", index=False)
+        wr.s3.to_parquet(train_df, dataset_path(month, "train.parquet"), index=False)
+        wr.s3.to_parquet(test_df, dataset_path(month, "test.parquet"), index=False)
 
         data_info = {
             "month": month,
@@ -126,7 +125,7 @@ def process_etl_taxi_data():
         }
         boto3.client("s3").put_object(
             Bucket="data",
-            Key="taxi/data_info.json",
+            Key=f"taxi/{month}/data_info.json",
             Body=json.dumps(data_info, indent=2).encode("utf-8"),
         )
 

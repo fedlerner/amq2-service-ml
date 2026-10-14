@@ -87,7 +87,10 @@ def batch_predict_taxi_tips():
         version = champion_version(mlflow.MlflowClient(), MODEL_NAME, MODEL_ALIAS)
         model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version}")
 
-        df['tip_amount_pred'] = model.predict(df[FEATURES].astype('float64')).clip(min=0).round(2)
+        # La cruda es la que se usa para medir el MAE, igual que el mae_test del registro;
+        # a Postgres va la recortada y redondeada, que es lo que sirve la API
+        df['tip_amount_pred_raw'] = model.predict(df[FEATURES].astype('float64'))
+        df['tip_amount_pred'] = df['tip_amount_pred_raw'].clip(lower=0).round(2)
         df['month'] = month
         df['model_version'] = int(version)
 
@@ -168,8 +171,9 @@ def batch_predict_taxi_tips():
         """
         Mide el error del mes contra la propina real y lo registra en MLflow.
 
-        Compara el MAE con el MAE de test del champion (tag ``mae_test`` de la versión). Si es
-        más de ``taxi_mae_alert_ratio`` veces ese valor, marca el run con ``alerta=degradacion``.
+        Usa la predicción cruda del modelo, la misma con la que se calculó ``mae_test``, y
+        compara el MAE con ese tag de la versión champion. Si es más de
+        ``taxi_mae_alert_ratio`` veces ese valor, marca el run con ``alerta=degradacion``.
         Si la versión no tiene el tag, no hay contra qué comparar: lo avisa y no dispara nada.
 
         :param result: Salida de ``predict``.
@@ -183,8 +187,8 @@ def batch_predict_taxi_tips():
         from airflow.models import Variable
         from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
 
-        df = wr.s3.read_parquet(result["path"], columns=['tip_amount', 'tip_amount_pred'])
-        y_true, y_pred = df['tip_amount'], df['tip_amount_pred']
+        df = wr.s3.read_parquet(result["path"], columns=['tip_amount', 'tip_amount_pred_raw'])
+        y_true, y_pred = df['tip_amount'], df['tip_amount_pred_raw']
         metrics = {
             'mae': mean_absolute_error(y_true, y_pred),
             'rmse': root_mean_squared_error(y_true, y_pred),

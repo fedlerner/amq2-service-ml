@@ -27,6 +27,16 @@ def raw_path(month: str) -> str:
     return f"s3://data/raw/yellow_tripdata_{month}.parquet"
 
 
+def dataset_path(month: str, name: str) -> str:
+    """
+    Path en S3 de un archivo del ETL para un mes: ``s3://data/taxi/<mes>/<name>``.
+
+    Cada mes tiene su carpeta, así un ETL de otro mes no pisa los datos que está usando un
+    reentrenamiento.
+    """
+    return f"s3://data/taxi/{month}/{name}"
+
+
 def ensure_raw_month(month: str) -> str:
     """
     Deja el parquet crudo del mes en ``s3://data/raw/``.

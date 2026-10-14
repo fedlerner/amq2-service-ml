@@ -11,7 +11,7 @@ markdown_text = """
 Reentrena el modelo de propinas con un mes nuevo y lo promueve solo si mejora.
 
 1. **run_etl**: dispara `process_etl_taxi_data` para el mes elegido y espera a que termine
-   (deja `train.parquet` / `test.parquet` del mes en `s3://data/taxi/`).
+   (deja `train.parquet` / `test.parquet` del mes en `s3://data/taxi/<mes>/`).
 2. **train_challenger**: clona el pipeline del `champion` (mismos hiperparámetros), lo entrena
    con el train del mes, lo registra en MLflow y le pone el alias `challenger`.
 3. **evaluate_champion_challenger**: evalúa los dos modelos con el test del mes nuevo, contra
@@ -41,7 +41,7 @@ MODEL_NAME = "taxi_tip_model"
     schedule=None,
     dagrun_timeout=datetime.timedelta(minutes=60),
     catchup=False,
-    # Usa los mismos train/test de S3 que el ETL: dos corridas a la vez se pisarían
+    # Dos reentrenamientos a la vez se pisarían los alias del registro
     max_active_runs=1,
     params={"month": Param("2026-04", type="string", pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
                            description="Mes de la TLC con el que reentrenar (YYYY-MM)")},
@@ -72,26 +72,18 @@ def retrain_taxi_tip_model():
         :param month: Mes con el que se entrena (YYYY-MM).
         :return: Versión registrada del challenger.
         """
-        import json
         import os
 
         import awswrangler as wr
-        import boto3
         import mlflow
         from mlflow.models import infer_signature
         from sklearn.base import clone
         from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
-        from taxi_common.data import FEATURES, TARGET
+        from taxi_common.data import FEATURES, TARGET, dataset_path
         from taxi_common.registry import champion_version as champion_version_of
 
-        data_info = json.loads(
-            boto3.client("s3").get_object(Bucket="data", Key="taxi/data_info.json")["Body"].read()
-        )
-        if data_info["month"] != month:
-            raise AirflowFailException(f"El train en S3 es de {data_info['month']}, no de {month}")
-
-        train = wr.s3.read_parquet("s3://data/taxi/train.parquet")
-        test = wr.s3.read_parquet("s3://data/taxi/test.parquet")
+        train = wr.s3.read_parquet(dataset_path(month, "train.parquet"))
+        test = wr.s3.read_parquet(dataset_path(month, "test.parquet"))
         X_train = train[FEATURES].astype("float64")
         X_test, y_test = test[FEATURES].astype("float64"), test[TARGET]
         # Mismo recorte del target que en la notebook: p99,5 del train
@@ -149,21 +141,12 @@ def retrain_taxi_tip_model():
         :return: ``promote_challenger`` si el challenger tiene menor MAE; si no,
                  ``keep_champion``.
         """
-        import json
-
         import awswrangler as wr
-        import boto3
         import mlflow
         from sklearn.metrics import mean_absolute_error
-        from taxi_common.data import FEATURES, TARGET
+        from taxi_common.data import FEATURES, TARGET, dataset_path
 
-        data_info = json.loads(
-            boto3.client("s3").get_object(Bucket="data", Key="taxi/data_info.json")["Body"].read()
-        )
-        if data_info["month"] != month:
-            raise AirflowFailException(f"El test en S3 es de {data_info['month']}, no de {month}")
-
-        test = wr.s3.read_parquet("s3://data/taxi/test.parquet")
+        test = wr.s3.read_parquet(dataset_path(month, "test.parquet"))
         X_test, y_test = test[FEATURES].astype("float64"), test[TARGET]
 
         mlflow.set_tracking_uri("http://mlflow:5000")

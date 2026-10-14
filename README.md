@@ -41,7 +41,7 @@ flowchart LR
     RETRAIN -->|promueve si mejora| REG
 ```
 
-1. **ETL (DAG `process_etl_taxi_data`):** baja el mes elegido de la TLC a `s3://data/raw/` (si no estaba), lo limpia con las mismas reglas de AMq1, se queda con las 11 features del modelo, toma una muestra y guarda `train.parquet`, `test.parquet` y `data_info.json` en `s3://data/taxi/`. Registra el run en el experimento `Taxi Tip ETL`.
+1. **ETL (DAG `process_etl_taxi_data`):** baja el mes elegido de la TLC a `s3://data/raw/` (si no estaba), lo limpia con las mismas reglas de AMq1, se queda con las 11 features del modelo, toma una muestra y guarda `train.parquet`, `test.parquet` y `data_info.json` en `s3://data/taxi/<mes>/`. Registra el run en el experimento `Taxi Tip ETL`.
 2. **Experimento (`notebooks/experimento_mlflow.ipynb`):** búsqueda de hiperparámetros con Optuna (15 trials, CV de 3 folds sobre train), cada trial como run anidado del experimento `Taxi Tip`. El mejor pipeline se reentrena con todo el train, se compara contra dos baselines, se evalúa en test y se registra como `taxi_tip_model`. Si no había champion, o si le gana al champion actual en este mismo test, pasa a `champion`; si no, queda como `challenger`.
 3. **API (FastAPI):** carga `taxi_tip_model@champion` desde MLflow y estima la propina de un viaje (`POST /predict`) o de hasta 1000 (`POST /predict/batch`). Valida las entradas con Pydantic. Cada 60 segundos se fija en segundo plano si hay un champion nuevo y, si lo hay, lo carga, aunque no lleguen requests. No hace falta reiniciar el contenedor.
 4. **Predicción en lote (DAG `batch_predict_taxi_tips`):** toma un mes nuevo, lo limpia igual que el ETL, predice todos sus viajes con el `champion` y los carga en la tabla `predicciones_propina` de la base `taxi` (si el mes ya estaba, lo reemplaza). Como en los datos viene la propina real, registra MAE, RMSE y R² del mes en el experimento `Taxi Tip Monitoreo`. Si el MAE del mes es más de 1,2 veces el MAE de test del champion (variable `taxi_mae_alert_ratio`), marca el run con `alerta=degradacion` y dispara el reentrenamiento con ese mes.
@@ -57,7 +57,7 @@ La descarga y la limpieza están en `airflow/dags/taxi_common/data.py` y las usa
 
 El MAE que guardamos en el tag `mae_test` de cada versión lo calculamos contra la propina real, sin el recorte al p99,5 que usamos para entrenar. Lo hicimos así porque la predicción en lote también mide contra la propina real; si no, la alerta compararía dos MAE calculados de forma distinta.
 
-Si se corre dos veces el ETL o la predicción en lote del mismo mes, el resultado es el mismo: si el parquet crudo ya está en MinIO no se vuelve a bajar, el split tiene semilla fija y en Postgres primero se borra el mes y después se carga. Los tres DAGs tienen `max_active_runs=1` porque escriben los mismos archivos en S3.
+Si se corre dos veces el ETL o la predicción en lote del mismo mes, el resultado es el mismo: si el parquet crudo ya está en MinIO no se vuelve a bajar, el split tiene semilla fija y en Postgres primero se borra el mes y después se carga. Cada mes del ETL tiene su propia carpeta en S3, así un ETL de otro mes no le pisa los datos a un reentrenamiento que está corriendo.
 
 Fijamos las versiones de todo lo que toca al modelo (scikit-learn 1.4.2, que es la de AMq1, numpy, pandas, skops y MLflow 3.16.1, igual que el servidor) en la imagen de Airflow, en la de FastAPI y en el entorno de la notebook, para que el modelo se cargue igual en todos lados.
 
@@ -71,7 +71,7 @@ Entrenado con marzo de 2026 (muestra de 300.000 viajes, 240.000 para train y 60.
 | Baseline: 20% del monto | 1,11 | 2,54 | 0,55 |
 | HistGB afinado | 1,02 | 2,21 | 0,66 |
 
-Contra la propina real sin recortar, el MAE de test da 1,051. Con abril de 2026 (2.571.605 viajes que el modelo no vio) la predicción en lote dio un MAE de 1,050, prácticamente igual, así que el monitoreo no levantó alerta. Probamos igual correr el reentrenamiento con abril y el challenger no le ganó al champion, así que quedó el mismo.
+Contra la propina real sin recortar, el MAE de test da 1,0511. Con abril de 2026 (2.571.605 viajes que el modelo no vio) la predicción en lote dio un MAE de 1,0505, prácticamente igual, así que el monitoreo no levantó alerta. Probamos igual correr el reentrenamiento con abril y el challenger no le ganó al champion, así que quedó el mismo.
 
 ## Estructura
 
@@ -122,7 +122,7 @@ Para apagar: `docker compose --profile all down`. Para borrar todo (imágenes, b
 Los DAGs arrancan pausados: hay que activar los tres en la UI de Airflow (o con `airflow dags unpause <dag_id>`). El reentrenamiento dispara el ETL y lo espera, así que si el ETL está pausado se queda colgado. Para elegir el mes, usar **Trigger DAG w/ config** con `{"month": "YYYY-MM"}`.
 
 1. **ETL**: disparar `process_etl_taxi_data` (por defecto, `2026-03`). Tarda un par de minutos; la primera vez baja el mes de la TLC.
-2. **Experimento**: correr la notebook (unos 2 minutos):
+2. **Experimento**: correr la notebook (unos 2 minutos). Usa el mes de la variable `ETL_MONTH` (por defecto, `2026-03`):
    ```bash
    uv sync
    uv run jupyter lab notebooks/experimento_mlflow.ipynb
