@@ -1,2 +1,9 @@
 fastapi>=0.116
 uvicorn>=0.27
+# Mismas versiones que la imagen de Airflow y la notebook, para cargar el modelo tal cual se entrenó
+mlflow-skinny==3.16.1
+scikit-learn==1.4.2
+skops==0.16.0
+numpy==1.26.4
+pandas==2.1.4
+boto3~=1.34

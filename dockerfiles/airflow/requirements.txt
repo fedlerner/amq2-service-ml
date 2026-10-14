@@ -1,4 +1,10 @@
-mlflow[extras]>=3.15
+# Fijamos todo lo que toca al modelo, igual que en la API y la notebook (pyproject.toml).
+# numpy y pandas son los que ya trae apache/airflow:3.0.2; mlflow igual que el servidor.
+mlflow[extras]==3.16.1
 boto3~=1.34
 scikit-learn==1.4.2
-pyarrow
+skops==0.16.0
+numpy==1.26.4
+pandas==2.1.4
+pyarrow==16.1.0
+awswrangler==3.17.1

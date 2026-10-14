@@ -48,6 +48,8 @@ x-airflow-common: &airflow-common
     AWS_SECRET_ACCESS_KEY: ${MINIO_SECRET_ACCESS_KEY:-minio123}
     AWS_ENDPOINT_URL_S3: http://s3:9000
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
+    # MLflow lo lee solo; así los DAGs no repiten la dirección del servidor
+    MLFLOW_TRACKING_URI: http://mlflow:5000
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
@@ -176,7 +178,7 @@ services:
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
     command: >
       mlflow server 
-      --backend-store-uri postgresql://${PG_USER:-airflow}:${PG_PASSWORD:-airflow}@postgres:5432/mlflow_db
+      --backend-store-uri postgresql+psycopg://${PG_USER:-airflow}:${PG_PASSWORD:-airflow}@postgres:5432/mlflow_db
       --host 0.0.0.0
       --default-artifact-root s3://${MLFLOW_BUCKET_NAME:-mlflow}/
       --workers 1
@@ -208,6 +210,9 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_SECRET_ACCESS_KEY:-minio123}
       - MLFLOW_S3_ENDPOINT_URL=http://s3:9000
       - AWS_ENDPOINT_URL_S3=http://s3:9000
+      # Si MLflow está caído, que la API no se quede minutos esperando reintentos
+      - MLFLOW_HTTP_REQUEST_MAX_RETRIES=1
+      - MLFLOW_HTTP_REQUEST_TIMEOUT=10
     command: >
       uvicorn app:app 
       --host 0.0.0.0
