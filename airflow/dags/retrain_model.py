@@ -82,6 +82,7 @@ def retrain_taxi_tip_model():
         from sklearn.base import clone
         from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
         from taxi_common.data import FEATURES, TARGET
+        from taxi_common.registry import champion_version as champion_version_of
 
         data_info = json.loads(
             boto3.client("s3").get_object(Bucket="data", Key="taxi/data_info.json")["Body"].read()
@@ -99,12 +100,8 @@ def retrain_taxi_tip_model():
 
         mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
-        try:
-            champion_version = client.get_model_version_by_alias(MODEL_NAME, "champion")
-        except mlflow.exceptions.MlflowException:
-            raise AirflowFailException(
-                f"No hay champion de {MODEL_NAME}: primero hay que correr la notebook del experimento")
-        champion = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{champion_version.version}")
+        champion_version = champion_version_of(client, MODEL_NAME)
+        champion = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{champion_version}")
         import taxi_tip  # lo deja importable el code_paths del champion
         from taxi_tip.mlflow_utils import skops_trusted_types
 
@@ -121,7 +118,7 @@ def retrain_taxi_tip_model():
                                     "proyecto": "taxi_tip", "origen": "retrain_dag"}) as run:
             mlflow.log_params({"etl_month": month, "rows_train": len(X_train),
                                "rows_test": len(X_test), "tip_cap": tip_cap,
-                               "champion_version": champion_version.version, **model_params})
+                               "champion_version": champion_version, **model_params})
             mlflow.log_metrics(metrics)
             model_info = mlflow.sklearn.log_model(
                 challenger,
@@ -136,7 +133,7 @@ def retrain_taxi_tip_model():
                 "mae_test": str(metrics["test_sin_recorte_mae"]), "origen": "retrain_dag"}
         version = client.create_model_version(
             name=MODEL_NAME, source=model_info.model_uri, run_id=run.info.run_id, tags=tags,
-            description=f"Reentrenado con {month}, hiperparámetros de la v{champion_version.version}",
+            description=f"Reentrenado con {month}, hiperparámetros de la v{champion_version}",
         )
         client.set_registered_model_alias(MODEL_NAME, "challenger", version.version)
         print(f"Challenger v{version.version}: MAE {metrics['test_sin_recorte_mae']:.4f}")

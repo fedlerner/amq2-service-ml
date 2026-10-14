@@ -23,7 +23,8 @@ WINSOR_COLS = ['trip_distance', 'duration_min', 'fare_amount', 'recargos']
 ZONE_COLS = ['PULocationID', 'DOLocationID']
 CATEGORICAL_COLS = ['VendorID', 'RatecodeID']
 
-AIRPORT_RATECODES = [2, 3]           # JFK y Newark
+# Definiciones de AMq1: aeropuerto por tarifa JFK (2) o Newark (3), hora pico 7-9 y 17-19
+AIRPORT_RATECODES = [2, 3]
 PEAK_HOURS = [7, 8, 9, 17, 18, 19]
 RANDOM_STATE = 42
 

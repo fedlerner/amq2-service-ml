@@ -38,11 +38,20 @@ def load_champion(model_name: str = MODEL_NAME):
     """
     Carga el champion actual del registro.
 
+    Devuelve ``None`` solo si el modelo no está registrado o no tiene alias ``champion``.
+    Cualquier otro error de MLflow (red, servidor caído) se propaga: si no, la notebook
+    tomaría un error pasajero como "no hay champion" y promovería sin comparar.
+
     :param model_name: Nombre del modelo registrado.
     :return: Tupla ``(versión, modelo)``, o ``None`` si todavía no hay champion.
     """
     try:
-        version = MlflowClient().get_model_version_by_alias(model_name, 'champion').version
-    except MlflowException:
+        aliases = MlflowClient().get_registered_model(model_name).aliases
+    except MlflowException as error:
+        if error.error_code == 'RESOURCE_DOES_NOT_EXIST':
+            return None
+        raise
+    if 'champion' not in aliases:
         return None
+    version = aliases['champion']
     return int(version), mlflow.sklearn.load_model(f'models:/{model_name}/{version}')

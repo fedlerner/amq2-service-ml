@@ -1,7 +1,6 @@
 import datetime
 
 from airflow.decorators import dag, task
-from airflow.exceptions import AirflowFailException
 from airflow.models.param import Param
 from airflow.providers.standard.operators.empty import EmptyOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
@@ -80,25 +79,22 @@ def batch_predict_taxi_tips():
         import awswrangler as wr
         import mlflow
         from taxi_common.data import FEATURES, clean_month
+        from taxi_common.registry import champion_version
 
         df = clean_month(raw_path, month)
 
         mlflow.set_tracking_uri("http://mlflow:5000")
-        try:
-            version = mlflow.MlflowClient().get_model_version_by_alias(MODEL_NAME, MODEL_ALIAS)
-        except mlflow.exceptions.MlflowException:
-            raise AirflowFailException(
-                f"No hay {MODEL_ALIAS} de {MODEL_NAME}: primero hay que correr la notebook del experimento")
-        model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version.version}")
+        version = champion_version(mlflow.MlflowClient(), MODEL_NAME, MODEL_ALIAS)
+        model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version}")
 
         df['tip_amount_pred'] = model.predict(df[FEATURES].astype('float64')).clip(min=0).round(2)
         df['month'] = month
-        df['model_version'] = int(version.version)
+        df['model_version'] = int(version)
 
         path = f"s3://data/taxi/predictions/{month}.parquet"
         wr.s3.to_parquet(df, path, index=False)
-        print(f"{len(df):,} viajes predichos con {MODEL_NAME} v{version.version}")
-        return {"path": path, "model_version": int(version.version)}
+        print(f"{len(df):,} viajes predichos con {MODEL_NAME} v{version}")
+        return {"path": path, "model_version": int(version)}
 
     @task(task_id="store_predictions")
     def store_predictions(result: dict, month: str) -> None:
