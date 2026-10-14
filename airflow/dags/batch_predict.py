@@ -78,18 +78,24 @@ def batch_predict_taxi_tips():
         """
         import awswrangler as wr
         import mlflow
+        import numpy as np
         from taxi_common.data import FEATURES, clean_month
         from taxi_common.registry import champion_version
 
         df = clean_month(raw_path, month)
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         version = champion_version(mlflow.MlflowClient(), MODEL_NAME, MODEL_ALIAS)
         model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version}")
 
+        # Predecimos en bloques: el pipeline hace varias copias de los datos y un mes entero de
+        # una sola vez ocupa varios GB
+        chunk_size = 500_000
+        preds = [model.predict(df[FEATURES].iloc[start:start + chunk_size].astype('float64'))
+                 for start in range(0, len(df), chunk_size)]
+
         # La cruda es la que se usa para medir el MAE, igual que el mae_test del registro;
         # a Postgres va la recortada y redondeada, que es lo que sirve la API
-        df['tip_amount_pred_raw'] = model.predict(df[FEATURES].astype('float64'))
+        df['tip_amount_pred_raw'] = np.concatenate(preds)
         df['tip_amount_pred'] = df['tip_amount_pred_raw'].clip(lower=0).round(2)
         df['month'] = month
         df['model_version'] = int(version)
@@ -197,8 +203,8 @@ def batch_predict_taxi_tips():
             'tip_pred_media': float(y_pred.mean()),
         }
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
-        version = mlflow.MlflowClient().get_model_version(MODEL_NAME, str(result["model_version"]))
+        client = mlflow.MlflowClient()
+        version = client.get_model_version(MODEL_NAME, str(result["model_version"]))
         mae_test = float(version.tags.get('mae_test', 'nan'))
         alert_ratio = float(Variable.get("taxi_mae_alert_ratio", default_var=1.2))
         degraded = metrics['mae'] > alert_ratio * mae_test
@@ -206,7 +212,12 @@ def batch_predict_taxi_tips():
             print(f"La versión {result['model_version']} no tiene tag mae_test: no se evalúa la alerta")
 
         experiment = mlflow.set_experiment("Taxi Tip Monitoreo")
-        with mlflow.start_run(run_name=f"batch_{month}", experiment_id=experiment.experiment_id):
+        run_name = f"batch_{month}"
+        # Igual que en Postgres, una corrida nueva del mes reemplaza a la anterior
+        for old_run in client.search_runs([experiment.experiment_id],
+                                          filter_string=f"tags.mlflow.runName = '{run_name}'"):
+            client.delete_run(old_run.info.run_id)
+        with mlflow.start_run(run_name=run_name, experiment_id=experiment.experiment_id):
             mlflow.log_params({'month': month, 'model_version': result["model_version"],
                                'rows': len(df), 'mae_test_champion': mae_test,
                                'alert_ratio': alert_ratio})

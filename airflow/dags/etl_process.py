@@ -129,7 +129,6 @@ def process_etl_taxi_data():
             Body=json.dumps(data_info, indent=2).encode("utf-8"),
         )
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         experiment = mlflow.set_experiment("Taxi Tip ETL")
         with mlflow.start_run(run_name=f"etl_taxi_{month}", experiment_id=experiment.experiment_id):
             mlflow.log_params({

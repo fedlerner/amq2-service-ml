@@ -13,9 +13,9 @@ Reentrena el modelo de propinas con un mes nuevo y lo promueve solo si mejora.
 1. **run_etl**: dispara `process_etl_taxi_data` para el mes elegido y espera a que termine
    (deja `train.parquet` / `test.parquet` del mes en `s3://data/taxi/<mes>/`).
 2. **train_challenger**: clona el pipeline del `champion` (mismos hiperparámetros), lo entrena
-   con el train del mes, lo registra en MLflow y le pone el alias `challenger`.
+   con el train del mes y lo registra en MLflow.
 3. **evaluate_champion_challenger**: evalúa los dos modelos con el test del mes nuevo, contra
-   la propina real.
+   la propina real, y le pone el alias `challenger` a la versión nueva.
 4. Si el challenger tiene menor MAE, **promote_challenger** lo pasa a `champion` (el anterior
    queda como `old_champion` para poder volver atrás); si no, **keep_champion** le saca el alias.
 
@@ -66,7 +66,8 @@ def retrain_taxi_tip_model():
     @task(task_id="train_challenger", retries=0)
     def train_challenger(month: str) -> int:
         """
-        Entrena un challenger con los hiperparámetros del champion y lo registra.
+        Entrena un challenger con los hiperparámetros del champion y lo registra (todavía sin
+        alias: se lo pone la evaluación).
 
         Al cargar el champion, MLflow agrega al path el paquete ``taxi_tip`` que guardamos con
         ``code_paths``, y lo reusamos para loguear el challenger.
@@ -92,7 +93,6 @@ def retrain_taxi_tip_model():
         tip_cap = float(train[TARGET].quantile(0.995))
         y_train = train[TARGET].clip(lower=0, upper=tip_cap)
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
         champion_version = champion_version_of(client, MODEL_NAME)
         champion = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{champion_version}")
@@ -129,7 +129,6 @@ def retrain_taxi_tip_model():
             name=MODEL_NAME, source=model_info.model_uri, run_id=run.info.run_id, tags=tags,
             description=f"Reentrenado con {month}, hiperparámetros de la v{champion_version}",
         )
-        client.set_registered_model_alias(MODEL_NAME, "challenger", version.version)
         print(f"Challenger v{version.version}: MAE {metrics['test_sin_recorte_mae']:.4f}")
         return int(version.version)
 
@@ -147,13 +146,13 @@ def retrain_taxi_tip_model():
         import mlflow
         from sklearn.metrics import mean_absolute_error
         from taxi_common.data import FEATURES, TARGET, dataset_path
+        from taxi_common.registry import champion_version as champion_version_of
 
         test = wr.s3.read_parquet(dataset_path(month, "test.parquet"))
         X_test, y_test = test[FEATURES].astype("float64"), test[TARGET]
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
-        champion_version = client.get_model_version_by_alias(MODEL_NAME, "champion").version
+        champion_version = champion_version_of(client, MODEL_NAME)
         mae = {}
         for alias, version in (("champion", champion_version), ("challenger", challenger_version)):
             model = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{version}")
@@ -164,6 +163,9 @@ def retrain_taxi_tip_model():
         # promote_challenger lo usa para no pisar un champion que no se comparó
         client.set_model_version_tag(MODEL_NAME, str(challenger_version),
                                      "champion_comparado", str(champion_version))
+        # Recién acá queda como challenger: si algo falla antes, el alias no apunta a una
+        # versión sin evaluar
+        client.set_registered_model_alias(MODEL_NAME, "challenger", str(challenger_version))
         print(f"MAE en el test del mes: champion v{champion_version} {mae['champion']:.4f} | "
               f"challenger v{challenger_version} {mae['challenger']:.4f}")
         return "promote_challenger" if mae["challenger"] < mae["champion"] else "keep_champion"
@@ -175,25 +177,27 @@ def retrain_taxi_tip_model():
 
         Usa la versión que llega por XCom y no el alias ``challenger``, por si alguien registró
         otro challenger (por ejemplo, desde la notebook) mientras corría el DAG. Si el champion
-        cambió después de la evaluación, no promueve: el challenger nunca se comparó con él.
+        cambió después de la evaluación, no promueve (el challenger nunca se comparó con él): le
+        saca el alias, lo marca como ``no_promovido`` y falla.
 
         :param challenger_version: Versión registrada del challenger.
         """
         import mlflow
+        from taxi_common.registry import champion_version, drop_alias_if_points_to
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
-        old = client.get_model_version_by_alias(MODEL_NAME, "champion").version
+        old = champion_version(client, MODEL_NAME)
         new = str(challenger_version)
         compared = client.get_model_version(MODEL_NAME, new).tags.get("champion_comparado")
         if compared != old:
+            drop_alias_if_points_to(client, MODEL_NAME, "challenger", new)
+            client.set_model_version_tag(MODEL_NAME, new, "estado", "no_promovido")
             raise AirflowFailException(
                 f"El champion pasó a ser la v{old} después de evaluar (se comparó contra la "
                 f"v{compared}): no se promueve la v{new}, hay que volver a correr el DAG")
 
         client.set_registered_model_alias(MODEL_NAME, "old_champion", old)
-        if client.get_registered_model(MODEL_NAME).aliases.get("challenger") == new:
-            client.delete_registered_model_alias(MODEL_NAME, "challenger")
+        drop_alias_if_points_to(client, MODEL_NAME, "challenger", new)
         client.set_registered_model_alias(MODEL_NAME, "champion", new)
         print(f"Nuevo champion: v{new} (la v{old} queda como old_champion)")
 
@@ -205,13 +209,11 @@ def retrain_taxi_tip_model():
         :param challenger_version: Versión registrada del challenger.
         """
         import mlflow
+        from taxi_common.registry import drop_alias_if_points_to
 
-        mlflow.set_tracking_uri("http://mlflow:5000")
         client = mlflow.MlflowClient()
         version = str(challenger_version)
-        aliases = client.get_registered_model(MODEL_NAME).aliases
-        if aliases.get("challenger") == version:
-            client.delete_registered_model_alias(MODEL_NAME, "challenger")
+        drop_alias_if_points_to(client, MODEL_NAME, "challenger", version)
         client.set_model_version_tag(MODEL_NAME, version, "estado", "descartado")
         print(f"El champion se mantiene; la v{version} queda descartada")
 

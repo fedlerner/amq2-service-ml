@@ -17,6 +17,10 @@ TARGET = 'tip_amount'
 
 INT_COLS = ['PULocationID', 'DOLocationID', 'passenger_count', 'hour', 'dow',
             'RatecodeID', 'VendorID']
+# Columnas del parquet crudo que usa la limpieza (además de los recargos)
+RAW_COLS = ['payment_type', 'tpep_pickup_datetime', 'tpep_dropoff_datetime', 'trip_distance',
+            'fare_amount', 'tip_amount', 'PULocationID', 'DOLocationID', 'passenger_count',
+            'RatecodeID', 'VendorID']
 RECARGOS_COLS = ['extra', 'mta_tax', 'tolls_amount', 'improvement_surcharge',
                  'congestion_surcharge', 'Airport_fee', 'cbd_congestion_fee']
 TLC_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_{month}.parquet"
@@ -80,7 +84,11 @@ def clean_month(path: str, month: str) -> pd.DataFrame:
     :param month: Mes procesado (YYYY-MM), para filtrar pickups de otros meses.
     :return: DataFrame con ``FEATURES`` + ``TARGET``, sin muestrear.
     """
-    df = wr.s3.read_parquet(path)
+    # Leemos solo lo que usamos; las columnas cambian un poco según el mes, así que primero
+    # miramos cuáles trae el archivo
+    available = wr.s3.read_parquet_metadata(path)[0].keys()
+    wanted = set(RAW_COLS + RECARGOS_COLS) | {'airport_fee'}
+    df = wr.s3.read_parquet(path, columns=[c for c in available if c in wanted])
     # En algunos años la TLC publicó la columna como airport_fee, en minúscula
     df = df.rename(columns={'airport_fee': 'Airport_fee'})
     n_raw = len(df)

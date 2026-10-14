@@ -190,6 +190,21 @@ class ErrorMessage(BaseModel):
     detail: str
 
 
+class ValidationErrorItem(BaseModel):
+    """Un error de validación: qué campo falló y por qué."""
+
+    loc: list[str | int] = Field(
+        description="Ubicación del campo, por ejemplo ['body', 'features', 'hour'].")
+    msg: str = Field(description="Explicación del error.")
+    type: str = Field(description="Tipo de error de Pydantic.")
+
+
+class ValidationErrorResponse(BaseModel):
+    """Respuesta 422: la lista de errores de validación."""
+
+    detail: list[ValidationErrorItem]
+
+
 app = FastAPI(
     title="Taxi Tip API",
     description="Estima la propina (USD) de viajes de Yellow Taxi NYC pagados con tarjeta. "
@@ -201,7 +216,8 @@ app = FastAPI(
 )
 
 PREDICT_RESPONSES = {
-    422: {"description": "Algún campo fuera de rango, o un viaje que el ETL descarta por "
+    422: {"model": ValidationErrorResponse,
+          "description": "Algún campo fuera de rango, o un viaje que el ETL descarta por "
                          "inconsistente (más de 100 mph, o tarifa estándar menor a USD 2,50 "
                          "por milla)."},
     503: {"model": ErrorMessage, "description": "Todavía no hay un champion en MLflow."},

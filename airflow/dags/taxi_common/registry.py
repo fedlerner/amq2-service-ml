@@ -27,3 +27,20 @@ def champion_version(client: MlflowClient, model_name: str, alias: str = "champi
         raise AirflowFailException(
             f"No hay {alias} de {model_name}: primero hay que correr la notebook del experimento")
     return aliases[alias]
+
+
+def drop_alias_if_points_to(client: MlflowClient, model_name: str, alias: str,
+                            version: str) -> None:
+    """
+    Saca un alias solo si todavía apunta a esa versión.
+
+    Si mientras tanto alguien lo movió a otra versión (por ejemplo, la notebook registró otro
+    challenger), lo deja como está.
+
+    :param client: Cliente de MLflow ya configurado.
+    :param model_name: Nombre del modelo registrado.
+    :param alias: Alias a sacar.
+    :param version: Versión a la que tiene que apuntar para sacarlo.
+    """
+    if client.get_registered_model(model_name).aliases.get(alias) == str(version):
+        client.delete_registered_model_alias(model_name, alias)
