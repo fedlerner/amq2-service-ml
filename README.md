@@ -41,10 +41,10 @@ flowchart LR
     RETRAIN -->|promueve si mejora| REG
 ```
 
-1. **ETL (DAG `process_etl_taxi_data`):** baja el mes elegido de la TLC a `s3://data/raw/` (si no estaba), lo limpia con las mismas reglas de AMq1, se queda con las 11 features del modelo, toma una muestra y guarda `train.parquet`, `test.parquet` y `data_info.json` en `s3://data/taxi/<mes>/`. Registra el run en el experimento `Taxi Tip ETL`.
-2. **Experimento (`notebooks/experimento_mlflow.ipynb`):** búsqueda de hiperparámetros con Optuna (15 trials, CV de 3 folds sobre train), cada trial como run anidado del experimento `Taxi Tip`. El mejor pipeline se reentrena con todo el train, se compara contra dos baselines, se evalúa en test y se registra como `taxi_tip_model`. Si no había champion, o si le gana al champion actual en este mismo test, pasa a `champion`; si no, queda como `challenger`.
+1. **ETL (DAG `process_etl_taxi_data`):** baja el mes elegido de la TLC a `s3://data/raw/` (si no estaba), lo limpia con las mismas reglas de AMq1, se queda con las 11 features del modelo, toma una muestra y guarda `clean.parquet`, `train.parquet`, `test.parquet` y `data_info.json` en `s3://data/taxi/<mes>/`. Registra el run en el experimento `Taxi Tip ETL`.
+2. **Experimento (`notebooks/experimento_mlflow.ipynb`):** búsqueda de hiperparámetros con Optuna (15 trials, CV de 3 folds sobre train), cada trial como run anidado del experimento `Taxi Tip`. El mejor pipeline se reentrena con todo el train, se compara contra dos baselines, se evalúa en test y se registra como `taxi_tip_model`. Si no había champion, o si le gana al champion actual en este mismo test, pasa a `champion` (y el anterior queda como `old_champion`); si no, queda como `challenger`.
 3. **API (FastAPI):** carga `taxi_tip_model@champion` desde MLflow y estima la propina de un viaje (`POST /predict`) o de hasta 1000 (`POST /predict/batch`). Valida las entradas con Pydantic. Cada 60 segundos se fija en segundo plano si hay un champion nuevo y, si lo hay, lo carga, aunque no lleguen requests. No hace falta reiniciar el contenedor.
-4. **Predicción en lote (DAG `batch_predict_taxi_tips`):** toma un mes nuevo, lo limpia igual que el ETL, predice todos sus viajes con el `champion` y los carga en la tabla `predicciones_propina` de la base `taxi` (si el mes ya estaba, lo reemplaza). Como en los datos viene la propina real, registra MAE, RMSE y R² del mes en el experimento `Taxi Tip Monitoreo`. Si el MAE del mes es más de 1,2 veces el MAE de test del champion (variable `taxi_mae_alert_ratio`), marca el run con `alerta=degradacion` y dispara el reentrenamiento con ese mes.
+4. **Predicción en lote (DAG `batch_predict_taxi_tips`):** toma un mes nuevo, lo limpia igual que el ETL, predice todos sus viajes con el `champion` y los carga en la tabla `predicciones_propina` de la base `taxi` (si el mes ya estaba, lo reemplaza). Como en los datos viene la propina real, registra MAE, RMSE y R² del mes en el experimento `Taxi Tip Monitoreo`, con un run por mes. Si el MAE del mes es más de 1,2 veces el MAE de test del champion (variable `taxi_mae_alert_ratio`), marca el run con `alerta=degradacion` y dispara el reentrenamiento con ese mes.
 5. **Reentrenamiento (DAG `retrain_taxi_tip_model`):** dispara el ETL del mes y espera a que termine, clona el pipeline del `champion` (mismos hiperparámetros), lo entrena con el train nuevo y lo registra como `challenger`. Después evalúa los dos con el test del mes nuevo: si el challenger tiene menor MAE pasa a `champion` y el anterior queda como `old_champion`, por si hay que volver atrás; si no, se descarta. La API se entera sola del cambio.
 
 ## Algunas decisiones
@@ -55,9 +55,9 @@ Como el pipeline tiene un transformer nuestro (`TaxiFeatureEngineer`), lo loguea
 
 La descarga y la limpieza están en `airflow/dags/taxi_common/data.py` y las usan tanto el ETL como la predicción en lote. Sacamos `total_amount` porque ya incluye la propina (en AMq1 vimos que era fuga de información).
 
-El MAE que guardamos en el tag `mae_test` de cada versión lo calculamos contra la propina real, sin el recorte al p99,5 que usamos para entrenar. Lo hicimos así porque la predicción en lote también mide contra la propina real; si no, la alerta compararía dos MAE calculados de forma distinta.
+El MAE que guardamos en el tag `mae_test` de cada versión lo calculamos contra la propina real, sin el recorte al p99,5 que usamos para entrenar, y con la predicción tal cual sale del modelo. Lo hicimos así porque la predicción en lote mide de la misma forma (a Postgres va la predicción redondeada, pero el MAE se calcula con la cruda); si no, la alerta compararía dos MAE calculados de forma distinta.
 
-Si se corre dos veces el ETL o la predicción en lote del mismo mes, el resultado es el mismo: si el parquet crudo ya está en MinIO no se vuelve a bajar, el split tiene semilla fija y en Postgres primero se borra el mes y después se carga. Cada mes del ETL tiene su propia carpeta en S3, así un ETL de otro mes no le pisa los datos a un reentrenamiento que está corriendo.
+Si se corre dos veces el ETL o la predicción en lote del mismo mes, el resultado es el mismo: si el parquet crudo ya está en MinIO no se vuelve a bajar, el split tiene semilla fija, en Postgres primero se borra el mes y después se carga, y el run de monitoreo del mes reemplaza al anterior. Cada mes del ETL tiene su propia carpeta en S3, así un ETL de otro mes no le pisa los datos a un reentrenamiento que está corriendo.
 
 Fijamos las versiones de todo lo que toca al modelo (scikit-learn 1.4.2, que es la de AMq1, numpy, pandas, skops y MLflow 3.16.1, igual que el servidor) en la imagen de Airflow, en la de FastAPI y en el entorno de la notebook, para que el modelo se cargue igual en todos lados.
 
@@ -76,17 +76,18 @@ Contra la propina real sin recortar, el MAE de test da 1,0511. Con abril de 2026
 ## Estructura
 
 ```
-airflow/dags/etl_process.py        DAG de ETL
-airflow/dags/batch_predict.py      DAG de predicción en lote y monitoreo
-airflow/dags/retrain_model.py      DAG de reentrenamiento champion/challenger
-airflow/dags/taxi_common/data.py   Descarga y limpieza de la TLC, compartida por los DAGs
-airflow/secrets/                   Variables y conexiones de Airflow
-src/taxi_tip/features.py           Pipeline del modelo (feature engineering + HistGB)
-src/taxi_tip/mlflow_utils.py       Funciones de apoyo para MLflow
-notebooks/experimento_mlflow.ipynb Búsqueda de hiperparámetros y registro
-dockerfiles/fastapi/app.py         API REST
-dockerfiles/                       Imágenes de Airflow, MLflow, Postgres y FastAPI
-pyproject.toml / uv.lock           Entorno local para la notebook
+airflow/dags/etl_process.py           DAG de ETL
+airflow/dags/batch_predict.py         DAG de predicción en lote y monitoreo
+airflow/dags/retrain_model.py         DAG de reentrenamiento champion/challenger
+airflow/dags/taxi_common/data.py      Descarga y limpieza de la TLC, compartida por los DAGs
+airflow/dags/taxi_common/registry.py  Consultas al registro de MLflow que usan los DAGs
+airflow/secrets/                      Variables y conexiones de Airflow
+src/taxi_tip/features.py              Pipeline del modelo (feature engineering + HistGB)
+src/taxi_tip/mlflow_utils.py          Funciones de apoyo para MLflow
+notebooks/experimento_mlflow.ipynb    Búsqueda de hiperparámetros y registro
+dockerfiles/fastapi/app.py            API REST
+dockerfiles/                          Imágenes de Airflow, MLflow, Postgres y FastAPI
+pyproject.toml / uv.lock              Entorno local para la notebook
 ```
 
 ## Servicios
@@ -104,7 +105,7 @@ Bases en Postgres: `airflow`, `mlflow_db` y `taxi` (predicciones).
 
 ## Cómo levantarlo
 
-Necesitás Docker con al menos 6 GB de RAM y [uv](https://docs.astral.sh/uv/) para la notebook.
+Necesitás Docker con al menos 6 GB de RAM y unos 15 GB libres de disco (las imágenes ocupan unos 5 GB, más el caché de build y los datos), y [uv](https://docs.astral.sh/uv/) para la notebook.
 
 1. En `.env`, poner en `AIRFLOW_UID` el resultado de `id -u` (Linux/macOS).
 2. Levantar todo:
@@ -119,16 +120,16 @@ Para apagar: `docker compose --profile all down`. Para borrar todo (imágenes, b
 
 ## Cómo correr el flujo completo
 
-Los DAGs arrancan pausados: hay que activar los tres en la UI de Airflow (o con `airflow dags unpause <dag_id>`). El reentrenamiento dispara el ETL y lo espera, así que si el ETL está pausado se queda colgado. Para elegir el mes, usar **Trigger DAG w/ config** con `{"month": "YYYY-MM"}`.
+Los DAGs arrancan pausados: hay que activar los tres en la UI de Airflow (o con `airflow dags unpause <dag_id>`). El reentrenamiento dispara el ETL y lo espera, así que si el ETL está pausado se queda esperando hasta el timeout (una hora). Para elegir el mes, usar **Trigger DAG w/ config** con `{"month": "YYYY-MM"}`.
 
-1. **ETL**: disparar `process_etl_taxi_data` (por defecto, `2026-03`). Tarda un par de minutos; la primera vez baja el mes de la TLC.
+1. **ETL**: disparar `process_etl_taxi_data` (por defecto, `2026-03`). Tarda menos de un minuto; la primera vez baja el mes de la TLC.
 2. **Experimento**: correr la notebook (unos 2 minutos). Usa el mes de la variable `ETL_MONTH` (por defecto, `2026-03`):
    ```bash
    uv sync
    uv run jupyter lab notebooks/experimento_mlflow.ipynb
    ```
    Al terminar, `taxi_tip_model` tiene su `champion` en MLflow.
-3. **API**: ya está levantada; hasta que termina el paso 2 responde 503. Se puede probar desde http://localhost:8800/docs o con el `curl` de abajo.
+3. **API**: ya está levantada; hasta que termina el paso 2 responde 503, y después tarda hasta un minuto en tomar el champion. Se puede probar desde http://localhost:8800/docs o con el `curl` de abajo.
 4. **Predicción en lote**: disparar `batch_predict_taxi_tips` (por defecto, `2026-04`). Las predicciones quedan en Postgres:
    ```bash
    docker exec postgres psql -U airflow -d taxi -c "SELECT month, count(*), avg(tip_amount), avg(tip_amount_pred) FROM predicciones_propina GROUP BY month;"
@@ -174,8 +175,9 @@ Los rangos de distancia, duración y tarifa mínima, el tope de 100 mph de veloc
   export AWS_SECRET_ACCESS_KEY=minio123
   export AWS_ENDPOINT_URL_S3=http://localhost:9000
   export MLFLOW_S3_ENDPOINT_URL=http://localhost:9000
+  export MLFLOW_TRACKING_URI=http://localhost:5001
   ```
-  y `mlflow.set_tracking_uri("http://localhost:5001")`. Dentro de los contenedores las direcciones son `http://mlflow:5000` y `http://s3:9000`.
+  Dentro de los contenedores las direcciones son `http://mlflow:5000` y `http://s3:9000`.
 
 ### Cambios al ambiente base
 
@@ -185,5 +187,6 @@ Sobre el repo de la cátedra ajustamos:
 - Base `taxi` en Postgres (`dockerfiles/postgres/mlflow.sql`) y conexión `taxi_db`.
 - MLflow usa `postgresql+psycopg://` en el backend store. Con el driver implícito, SQLAlchemy < 2.1 busca psycopg2, que la imagen ya no trae, y el servidor no arrancaba.
 - La imagen de Airflow deja `/tmp/.cache` escribible para el grupo 0. Con un `AIRFLOW_UID` distinto de 50000, las tareas `@task.virtualenv` no podían crear su entorno.
-- La imagen de Airflow agrega scikit-learn, skops y awswrangler, y fija MLflow, numpy y pandas; la de FastAPI suma MLflow, scikit-learn y skops con las mismas versiones.
+- La imagen de Airflow agrega scikit-learn, skops y awswrangler, y fija MLflow, numpy, pandas y pyarrow; la de FastAPI suma MLflow, scikit-learn y skops con las mismas versiones.
+- Airflow recibe `MLFLOW_TRACKING_URI` por variable de entorno, así los DAGs no repiten la dirección del servidor.
 - La API corta los reintentos del cliente de MLflow (`MLFLOW_HTTP_REQUEST_MAX_RETRIES=1`), para no quedarse colgada si MLflow se cae.

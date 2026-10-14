@@ -188,6 +188,11 @@ def retrain_taxi_tip_model():
         client = mlflow.MlflowClient()
         old = champion_version(client, MODEL_NAME)
         new = str(challenger_version)
+        if old == new:
+            # Un intento anterior ya lo promovió y falló después: no hay nada más que hacer
+            drop_alias_if_points_to(client, MODEL_NAME, "challenger", new)
+            print(f"La v{new} ya es champion (la promovió un intento anterior)")
+            return
         compared = client.get_model_version(MODEL_NAME, new).tags.get("champion_comparado")
         if compared != old:
             drop_alias_if_points_to(client, MODEL_NAME, "challenger", new)

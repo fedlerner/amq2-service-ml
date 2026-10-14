@@ -18,7 +18,8 @@ deja los resultados en Postgres.
 3. **store_predictions**: carga las predicciones en la tabla `predicciones_propina` de la base
    `taxi` (conexión `taxi_db`). Si el mes ya estaba, lo reemplaza.
 4. **log_metrics**: como la propina real viene en los datos, mide el error del mes y lo
-   registra en el experimento `Taxi Tip Monitoreo` de MLflow. Si el MAE del mes es más de
+   registra en el experimento `Taxi Tip Monitoreo` de MLflow (un run por mes: si se vuelve a
+   correr el mes, reemplaza al anterior). Si el MAE del mes es más de
    `taxi_mae_alert_ratio` veces (1,2 por defecto) el MAE de test del champion, marca el run con
    `alerta=degradacion`.
 5. **check_degradation**: cuando terminan los pasos 3 y 4, si hubo degradación
