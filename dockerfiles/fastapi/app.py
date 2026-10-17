@@ -209,8 +209,8 @@ app = FastAPI(
     title="Taxi Tip API",
     description="Estima la propina (USD) de viajes de Yellow Taxi NYC pagados con tarjeta. "
                 "Sirve el modelo champion registrado en MLflow. Mientras no haya un champion "
-                "(antes de correr la notebook del experimento) los endpoints de predicción "
-                "responden 503.",
+                "(antes de correr el DAG train_taxi_tip_model o la notebook) los endpoints de "
+                "predicción responden 503.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -220,6 +220,7 @@ PREDICT_RESPONSES = {
           "description": "Algún campo fuera de rango, o un viaje que el ETL descarta por "
                          "inconsistente (más de 100 mph, o tarifa estándar menor a USD 2,50 "
                          "por milla)."},
+    500: {"model": ErrorMessage, "description": "El modelo falló al predecir."},
     503: {"model": ErrorMessage, "description": "Todavía no hay un champion en MLflow."},
 }
 
@@ -239,7 +240,15 @@ def _predict(trips: list[TripFeatures]) -> tuple[list[float], int]:
         )
     model, version = current
     X = pd.DataFrame([t.model_dump() for t in trips], columns=FEATURES).astype("float64")
-    return [round(max(float(p), 0.0), 2) for p in model.predict(X)], version
+    try:
+        preds = model.predict(X)
+    except Exception:
+        logger.exception("Falló la predicción con %s versión %s", MODEL_NAME, version)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"El modelo v{version} no pudo predecir; el detalle quedó en el log.",
+        ) from None
+    return [round(max(float(p), 0.0), 2) for p in preds], version
 
 
 @app.get("/", response_model=APIInfo)
@@ -252,6 +261,24 @@ def read_root() -> APIInfo:
         model_alias=MODEL_ALIAS,
         model_version=state.current[1] if state.current else None,
     )
+
+
+@app.get("/health", response_model=APIInfo,
+         responses={503: {"model": ErrorMessage, "description": "No hay un modelo cargado."}})
+def health() -> APIInfo:
+    """
+    Indica si la API está lista para predecir.
+
+    A diferencia de ``GET /``, que siempre responde 200, devuelve 503 mientras no haya un
+    champion cargado. El healthcheck del contenedor usa ``GET /``, para que el contenedor figure
+    sano aunque todavía no se haya entrenado ningún modelo.
+    """
+    if state.current is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"No hay un modelo '{MODEL_NAME}@{MODEL_ALIAS}' cargado.",
+        )
+    return read_root()
 
 
 @app.post("/predict", response_model=TipPrediction, responses=PREDICT_RESPONSES)
