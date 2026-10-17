@@ -146,13 +146,15 @@ services:
       - s3
     networks:
       - backend
+    # Reintenta hasta que MinIO responda: con un sleep fijo, si MinIO tardaba en arrancar los
+    # buckets no se creaban y el contenedor igual terminaba bien
     entrypoint: >
       /bin/sh -c '
-      sleep 5;
-      /usr/bin/mc alias set s3 http://s3:9000 ${MINIO_ACCESS_KEY:-minio} ${MINIO_SECRET_ACCESS_KEY:-minio123};
-      /usr/bin/mc mb s3/${MLFLOW_BUCKET_NAME:-mlflow};
-      /usr/bin/mc mb s3/${DATA_REPO_BUCKET_NAME:-data};
-      exit 0;
+      until /usr/bin/mc alias set s3 http://s3:9000 ${MINIO_ACCESS_KEY:-minio} ${MINIO_SECRET_ACCESS_KEY:-minio123}; do
+      echo "Esperando a MinIO..."; sleep 2;
+      done;
+      /usr/bin/mc mb --ignore-existing s3/${MLFLOW_BUCKET_NAME:-mlflow} &&
+      /usr/bin/mc mb --ignore-existing s3/${DATA_REPO_BUCKET_NAME:-data}
       '
 
   mlflow:
