@@ -50,12 +50,16 @@ x-airflow-common: &airflow-common
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
     # MLflow lo lee solo; así los DAGs no repiten la dirección del servidor
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    # El paquete taxi_tip (pipeline del modelo y entrenamiento) se monta desde src/, así los
+    # DAGs usan el mismo código que la notebook
+    PYTHONPATH: /opt/airflow/src
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-./airflow}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-./airflow}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-./airflow}/secrets:/opt/secrets
+    - ./src:/opt/airflow/src:ro
   networks:
     - frontend
     - backend
