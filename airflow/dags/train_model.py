@@ -126,7 +126,7 @@ def train_taxi_tip_model():
         from taxi_common.data import FEATURES, TARGET, dataset_path
         from taxi_tip.features import build_pipeline
         from taxi_tip.mlflow_utils import create_version, log_pipeline
-        from taxi_tip.training import metrics, tip_cap
+        from taxi_tip.training import log_training_report, metrics, tip_cap
 
         train = wr.s3.read_parquet(dataset_path(month, "train.parquet"))
         test = wr.s3.read_parquet(dataset_path(month, "test.parquet"))
@@ -143,6 +143,7 @@ def train_taxi_tip_model():
         with mlflow.start_run(run_id=search["run_id"]):
             mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
             mlflow.log_metrics({f"test_sin_recorte_{k}": v for k, v in test_metrics_raw.items()})
+            log_training_report(model, X_test, y_test_raw.clip(lower=0, upper=cap))
             model_info = log_pipeline(model, X_train)
 
         tags = {**search["params"], "modelo": "HistGradientBoostingRegressor",

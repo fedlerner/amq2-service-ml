@@ -106,13 +106,103 @@ def search_hyperparameters(X_train: pd.DataFrame, y_train: pd.Series, experiment
             mlflow.log_metric('cv_mae', cv_mae)
         return cv_mae
 
+    def log_progress(study: optuna.Study, trial: optuna.trial.FrozenTrial) -> None:
+        # Corre con el run padre activo (el del trial ya se cerró): deja el historial de la
+        # búsqueda como métricas por paso, que MLflow grafica solo
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            mlflow.log_metric('optuna_cv_mae', trial.value, step=trial.number)
+            mlflow.log_metric('optuna_mejor_cv_mae', study.best_value, step=trial.number)
+
     study = optuna.create_study(
         direction='minimize',
         sampler=optuna.samplers.TPESampler(seed=RANDOM_STATE),
         pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=1),
     )
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=n_trials, callbacks=[log_progress])
     return study
+
+
+def log_training_report(model, X_test: pd.DataFrame, y_test: pd.Series,
+                        sample_size: int = 10_000) -> None:
+    """
+    Registra en el run activo las curvas de entrenamiento y los gráficos de evaluación.
+
+    - Curvas: el ``HistGradientBoostingRegressor`` separa un 10 % del train para validar en
+      cada iteración (early stopping). El MAE de train y de esa validación por iteración
+      queda como métricas por paso (``curva_mae_train`` y ``curva_mae_validacion``), que
+      MLflow grafica y permite comparar entre runs, y también como imagen.
+    - Gráficos sobre una muestra del test: predicción vs. real, distribución de los residuos e
+      importancia por permutación de las 11 columnas de entrada (cuánto empeora el MAE al
+      mezclar cada una).
+
+    :param model: Pipeline ya ajustado.
+    :param X_test: Features de test.
+    :param y_test: Target de test, recortado igual que el de train.
+    :param sample_size: Viajes de test que se usan para los gráficos.
+    """
+    import matplotlib.pyplot as plt
+    from mlflow.entities import Metric
+    from sklearn.inspection import permutation_importance
+
+    run_id = mlflow.active_run().info.run_id
+    hgb = model.named_steps['model']
+    if hasattr(hgb, 'validation_score_') and len(hgb.validation_score_):
+        # sklearn guarda los scores como -pérdida (más alto es mejor): los pasamos a MAE
+        curves = {'curva_mae_train': -np.asarray(hgb.train_score_),
+                  'curva_mae_validacion': -np.asarray(hgb.validation_score_)}
+        timestamp = int(pd.Timestamp.now().timestamp() * 1000)
+        MlflowClient().log_batch(run_id, metrics=[
+            Metric(key, float(value), timestamp, step)
+            for key, values in curves.items() for step, value in enumerate(values)])
+
+        fig, ax = plt.subplots(figsize=(7, 4))
+        ax.plot(curves['curva_mae_train'], label='Train')
+        ax.plot(curves['curva_mae_validacion'], label='Validación (10 % del train)')
+        ax.set_xlabel('Iteración (árboles)')
+        ax.set_ylabel('MAE (USD)')
+        ax.set_title('Curva de entrenamiento')
+        ax.legend()
+        fig.tight_layout()
+        mlflow.log_figure(fig, 'graficos/curva_entrenamiento.png')
+        plt.close(fig)
+
+    sample = X_test.sample(min(sample_size, len(X_test)), random_state=RANDOM_STATE)
+    y_sample = y_test.loc[sample.index]
+    pred = model.predict(sample)
+    cap = float(max(y_sample.max(), pred.max()))
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(y_sample, pred, s=4, alpha=0.3)
+    ax.plot([0, cap], [0, cap], color='black', linewidth=1)
+    ax.set_xlabel('Propina real (USD)')
+    ax.set_ylabel('Propina predicha (USD)')
+    ax.set_title('Predicción vs. real (muestra de test)')
+    fig.tight_layout()
+    mlflow.log_figure(fig, 'graficos/prediccion_vs_real.png')
+    plt.close(fig)
+
+    residuals = y_sample - pred
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.hist(residuals.clip(-10, 10), bins=80)
+    ax.axvline(0, color='black', linewidth=1)
+    ax.set_xlabel('Real - predicha (USD, recortado a ±10)')
+    ax.set_ylabel('Viajes')
+    ax.set_title('Distribución de los residuos (muestra de test)')
+    fig.tight_layout()
+    mlflow.log_figure(fig, 'graficos/residuos.png')
+    plt.close(fig)
+
+    importance = permutation_importance(model, sample, y_sample,
+                                        scoring='neg_mean_absolute_error', n_repeats=3,
+                                        random_state=RANDOM_STATE)
+    importance = pd.Series(importance.importances_mean, index=sample.columns).sort_values()
+    fig, ax = plt.subplots(figsize=(7, 5))
+    importance.plot.barh(ax=ax)
+    ax.set_xlabel('Aumento del MAE (USD)')
+    ax.set_title('Importancia por permutación')
+    fig.tight_layout()
+    mlflow.log_figure(fig, 'graficos/importancia_permutacion.png')
+    plt.close(fig)
 
 
 def promote_if_better(client: MlflowClient, version: str, mae: float, X_test: pd.DataFrame,

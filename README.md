@@ -73,6 +73,23 @@ Si se corre dos veces el ETL o la predicción en lote del mismo mes, el resultad
 
 Fijamos las versiones de todo lo que toca al modelo (scikit-learn 1.4.2, que es la de AMq1, numpy, pandas, skops y MLflow 3.16.1, igual que el servidor) en la imagen de Airflow, en la de FastAPI y en el entorno de la notebook, para que el modelo se cargue igual en todos lados.
 
+## Qué queda registrado en MLflow
+
+En http://localhost:5001:
+
+| Experimento | Qué tiene |
+|---|---|
+| `Taxi Tip ETL` | Un run por ETL: mes, filas de train y test, y la descripción del dataset |
+| `Taxi Tip` | Un run padre por entrenamiento (DAG, notebook o reentrenamiento) con un run hijo por trial de Optuna |
+| `Taxi Tip Monitoreo` | Un run por mes predicho en lote: MAE, RMSE y R² contra la propina real, y si hubo alerta de degradación |
+
+En cada run de entrenamiento (experimento `Taxi Tip`):
+
+- **Métricas finales**: MAE, RMSE y R² en test (con el target recortado y sin recortar) y los de los dos baselines.
+- **Curvas** (pestaña *Model metrics*): `curva_mae_train` y `curva_mae_validacion`, el MAE en cada iteración del HistGB sobre train y sobre el 10 % del train que separa para validar; y `optuna_cv_mae` / `optuna_mejor_cv_mae`, el MAE de CV de cada trial y el mejor hasta ese momento.
+- **Gráficos** (pestaña *Artifacts*, carpeta `graficos/`): curva de entrenamiento, predicción vs. real, distribución de los residuos e importancia por permutación de las 11 columnas de entrada.
+- **Modelo**: el pipeline completo, registrado como versión de `taxi_tip_model` con sus hiperparámetros y el `mae_test` como tags.
+
 ## Resultados
 
 Entrenado con marzo de 2026 (muestra de 300.000 viajes, 240.000 para train y 60.000 para test). Métricas en test, en USD:

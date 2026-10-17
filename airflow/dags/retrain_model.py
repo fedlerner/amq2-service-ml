@@ -87,6 +87,7 @@ def retrain_taxi_tip_model():
         from taxi_common.data import FEATURES, TARGET, dataset_path
         from taxi_common.registry import champion_version as champion_version_of
         from taxi_tip.mlflow_utils import create_version, log_pipeline
+        from taxi_tip.training import log_training_report
         from taxi_tip.training import metrics as compute_metrics
         from taxi_tip.training import tip_cap as compute_tip_cap
 
@@ -115,6 +116,7 @@ def retrain_taxi_tip_model():
                                "rows_test": len(X_test), "tip_cap": tip_cap,
                                "champion_version": champion_version, **model_params})
             mlflow.log_metrics(metrics)
+            log_training_report(challenger, X_test, y_test.clip(lower=0, upper=tip_cap))
             model_info = log_pipeline(challenger, X_train)
 
         tags = {"modelo": "HistGradientBoostingRegressor", "etl_month": month,
