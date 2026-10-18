@@ -25,7 +25,8 @@ def champion_version(client: MlflowClient, model_name: str, alias: str = "champi
         aliases = {}
     if alias not in aliases:
         raise AirflowFailException(
-            f"No hay {alias} de {model_name}: primero hay que correr la notebook del experimento")
+            f"No hay {alias} de {model_name}: primero hay que correr el DAG train_taxi_tip_model "
+            "(o la notebook del experimento)")
     return aliases[alias]
 
 

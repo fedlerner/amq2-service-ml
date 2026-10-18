@@ -1,8 +1,9 @@
 """
 Feature engineering del modelo de propinas de Yellow Taxi.
 
-Está armado como un ``Pipeline`` de sklearn que se registra entero en MLflow. Las reglas son
-las de AMq1.
+Está armado como un ``Pipeline`` de sklearn que se registra entero en MLflow. La winsorización y
+las features derivadas son las de AMq1; la codificación de zonas y categóricas cambia un poco
+(ver ``build_pipeline``).
 """
 import numpy as np
 import pandas as pd
@@ -122,13 +123,15 @@ def build_pipeline(**model_params) -> Pipeline:
     """
     Arma el pipeline completo: feature engineering, codificación y modelo.
 
-    - Zonas (``PULocationID``, ``DOLocationID``): target encoding. ``TargetEncoder`` usa
+    - Zonas (``PULocationID``, ``DOLocationID``): target encoding. En AMq1 era la media del
+      target por zona calculada sobre todo el train; ``TargetEncoder`` además suaviza y usa
       validación cruzada interna al ajustar, para que al codificar train no se filtre su
       propio target.
-    - ``VendorID`` y ``RatecodeID``: one-hot; una categoría nueva en producción queda en ceros.
+    - ``VendorID`` y ``RatecodeID``: one-hot, sin ``drop_first`` (a los árboles no les afecta);
+      una categoría nueva en producción queda en ceros.
     - Modelo: ``HistGradientBoostingRegressor`` con pérdida absoluta, como en AMq1.
 
-    No se escala: los árboles no dependen de la escala de las variables.
+    No se escala (en AMq1 sí): los árboles no dependen de la escala de las variables.
 
     :param model_params: Hiperparámetros del ``HistGradientBoostingRegressor``.
     :return: Pipeline sin ajustar.

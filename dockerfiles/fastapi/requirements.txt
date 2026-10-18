@@ -1,5 +1,6 @@
-fastapi>=0.116
-uvicorn>=0.27
+# Mismas versiones que quedaron en uv.lock
+fastapi==0.143.0
+uvicorn==0.54.0
 # Mismas versiones que la imagen de Airflow y la notebook, para cargar el modelo tal cual se entrenó
 mlflow-skinny==3.16.1
 scikit-learn==1.4.2

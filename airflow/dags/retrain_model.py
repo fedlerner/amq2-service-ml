@@ -16,8 +16,13 @@ Reentrena el modelo de propinas con un mes nuevo y lo promueve solo si mejora.
    con el train del mes y lo registra en MLflow.
 3. **evaluate_champion_challenger**: evalúa los dos modelos con el test del mes nuevo, contra
    la propina real, y le pone el alias `challenger` a la versión nueva.
-4. Si el challenger tiene menor MAE, **promote_challenger** lo pasa a `champion` (el anterior
-   queda como `old_champion` para poder volver atrás); si no, **keep_champion** le saca el alias.
+4. Si el challenger baja el MAE al menos `taxi_min_improvement` (1 % por defecto),
+   **promote_challenger** lo pasa a `champion` (el anterior queda como `old_champion` para poder
+   volver atrás); si no, **keep_champion** le saca el alias.
+
+El challenger se entrena solo con el mes nuevo y no se vuelven a buscar hiperparámetros: la idea
+es adaptar el modelo a los datos recientes, no rediseñarlo. Para volver a buscar hiperparámetros
+está `train_taxi_tip_model` (o la notebook del experimento).
 
 La API levanta el champion nuevo sola. El DAG de predicción en lote dispara este DAG cuando
 detecta degradación. Necesita que `process_etl_taxi_data` esté activo.
@@ -69,41 +74,38 @@ def retrain_taxi_tip_model():
         Entrena un challenger con los hiperparámetros del champion y lo registra (todavía sin
         alias: se lo pone la evaluación).
 
-        Al cargar el champion, MLflow agrega al path el paquete ``taxi_tip`` que guardamos con
-        ``code_paths``, y lo reusamos para loguear el challenger.
+        ``taxi_tip`` se importa antes de cargar el champion: al cargar un modelo, MLflow pone
+        primero en el path el ``taxi_tip`` que se guardó con él, que puede ser más viejo que el de
+        ``src/``.
 
         :param month: Mes con el que se entrena (YYYY-MM).
         :return: Versión registrada del challenger.
         """
-        import os
-
         import awswrangler as wr
         import mlflow
-        from mlflow.models import infer_signature
         from sklearn.base import clone
-        from sklearn.metrics import mean_absolute_error, r2_score, root_mean_squared_error
         from taxi_common.data import FEATURES, TARGET, dataset_path
         from taxi_common.registry import champion_version as champion_version_of
+        from taxi_tip.mlflow_utils import create_version, log_pipeline
+        from taxi_tip.training import log_training_report
+        from taxi_tip.training import metrics as compute_metrics
+        from taxi_tip.training import tip_cap as compute_tip_cap
 
         train = wr.s3.read_parquet(dataset_path(month, "train.parquet"))
         test = wr.s3.read_parquet(dataset_path(month, "test.parquet"))
         X_train = train[FEATURES].astype("float64")
         X_test, y_test = test[FEATURES].astype("float64"), test[TARGET]
         # Mismo recorte del target que en la notebook: p99,5 del train
-        tip_cap = float(train[TARGET].quantile(0.995))
+        tip_cap = compute_tip_cap(train[TARGET])
         y_train = train[TARGET].clip(lower=0, upper=tip_cap)
 
         client = mlflow.MlflowClient()
         champion_version = champion_version_of(client, MODEL_NAME)
         champion = mlflow.sklearn.load_model(f"models:/{MODEL_NAME}/{champion_version}")
-        import taxi_tip  # lo deja importable el code_paths del champion
-        from taxi_tip.mlflow_utils import skops_trusted_types
 
         challenger = clone(champion).fit(X_train, y_train)
-        y_pred = challenger.predict(X_test)
-        metrics = {"test_sin_recorte_mae": mean_absolute_error(y_test, y_pred),
-                   "test_sin_recorte_rmse": root_mean_squared_error(y_test, y_pred),
-                   "test_sin_recorte_r2": r2_score(y_test, y_pred)}
+        metrics = {f"test_sin_recorte_{k}": v
+                   for k, v in compute_metrics(y_test, challenger.predict(X_test)).items()}
 
         experiment = mlflow.set_experiment("Taxi Tip")
         model_params = challenger.named_steps["model"].get_params()
@@ -114,19 +116,13 @@ def retrain_taxi_tip_model():
                                "rows_test": len(X_test), "tip_cap": tip_cap,
                                "champion_version": champion_version, **model_params})
             mlflow.log_metrics(metrics)
-            model_info = mlflow.sklearn.log_model(
-                challenger,
-                name="model",
-                signature=infer_signature(X_train, challenger.predict(X_train.head(100))),
-                input_example=X_train.head(3),
-                code_paths=[os.path.dirname(taxi_tip.__file__)],
-                skops_trusted_types=skops_trusted_types(challenger),
-            )
+            log_training_report(challenger, X_test, y_test.clip(lower=0, upper=tip_cap))
+            model_info = log_pipeline(challenger, X_train)
 
         tags = {"modelo": "HistGradientBoostingRegressor", "etl_month": month,
-                "mae_test": str(metrics["test_sin_recorte_mae"]), "origen": "retrain_dag"}
-        version = client.create_model_version(
-            name=MODEL_NAME, source=model_info.model_uri, run_id=run.info.run_id, tags=tags,
+                "mae_test": metrics["test_sin_recorte_mae"], "origen": "retrain_dag"}
+        version = create_version(
+            client, model_info.model_uri, run.info.run_id, tags,
             description=f"Reentrenado con {month}, hiperparámetros de la v{champion_version}",
         )
         print(f"Challenger v{version.version}: MAE {metrics['test_sin_recorte_mae']:.4f}")
@@ -137,13 +133,19 @@ def retrain_taxi_tip_model():
         """
         Evalúa champion y challenger sobre el mismo test y decide si promover.
 
+        Para promover, el challenger tiene que bajar el MAE del champion al menos
+        ``taxi_min_improvement`` (1 % por defecto). Con un solo test, diferencias más chicas
+        pueden ser ruido, y sin ese margen el champion podría cambiar de un mes a otro sin que el
+        modelo mejore de verdad.
+
         :param challenger_version: Versión registrada del challenger.
         :param month: Mes del reentrenamiento (YYYY-MM).
-        :return: ``promote_challenger`` si el challenger tiene menor MAE; si no,
-                 ``keep_champion``.
+        :return: ``promote_challenger`` si el challenger mejora el MAE en al menos el margen; si
+                 no, ``keep_champion``.
         """
         import awswrangler as wr
         import mlflow
+        from airflow.models import Variable
         from sklearn.metrics import mean_absolute_error
         from taxi_common.data import FEATURES, TARGET, dataset_path
         from taxi_common.registry import champion_version as champion_version_of
@@ -166,9 +168,12 @@ def retrain_taxi_tip_model():
         # Recién acá queda como challenger: si algo falla antes, el alias no apunta a una
         # versión sin evaluar
         client.set_registered_model_alias(MODEL_NAME, "challenger", str(challenger_version))
+        min_improvement = float(Variable.get("taxi_min_improvement", default_var=0.01))
+        threshold = mae["champion"] * (1 - min_improvement)
         print(f"MAE en el test del mes: champion v{champion_version} {mae['champion']:.4f} | "
-              f"challenger v{challenger_version} {mae['challenger']:.4f}")
-        return "promote_challenger" if mae["challenger"] < mae["champion"] else "keep_champion"
+              f"challenger v{challenger_version} {mae['challenger']:.4f} "
+              f"(para promover tiene que ser menor a {threshold:.4f})")
+        return "promote_challenger" if mae["challenger"] < threshold else "keep_champion"
 
     @task(task_id="promote_challenger")
     def promote_challenger(challenger_version: int) -> None:

@@ -50,12 +50,16 @@ x-airflow-common: &airflow-common
     MLFLOW_S3_ENDPOINT_URL: http://s3:9000
     # MLflow lo lee solo; así los DAGs no repiten la dirección del servidor
     MLFLOW_TRACKING_URI: http://mlflow:5000
+    # El paquete taxi_tip (pipeline del modelo y entrenamiento) se monta desde src/, así los
+    # DAGs usan el mismo código que la notebook
+    PYTHONPATH: /opt/airflow/src
   volumes:
     - ${AIRFLOW_PROJ_DIR:-./airflow}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-./airflow}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-./airflow}/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-./airflow}/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-./airflow}/secrets:/opt/secrets
+    - ./src:/opt/airflow/src:ro
   networks:
     - frontend
     - backend
@@ -146,13 +150,15 @@ services:
       - s3
     networks:
       - backend
+    # Reintenta hasta que MinIO responda: con un sleep fijo, si MinIO tardaba en arrancar los
+    # buckets no se creaban y el contenedor igual terminaba bien
     entrypoint: >
       /bin/sh -c '
-      sleep 5;
-      /usr/bin/mc alias set s3 http://s3:9000 ${MINIO_ACCESS_KEY:-minio} ${MINIO_SECRET_ACCESS_KEY:-minio123};
-      /usr/bin/mc mb s3/${MLFLOW_BUCKET_NAME:-mlflow};
-      /usr/bin/mc mb s3/${DATA_REPO_BUCKET_NAME:-data};
-      exit 0;
+      until /usr/bin/mc alias set s3 http://s3:9000 ${MINIO_ACCESS_KEY:-minio} ${MINIO_SECRET_ACCESS_KEY:-minio123}; do
+      echo "Esperando a MinIO..."; sleep 2;
+      done;
+      /usr/bin/mc mb --ignore-existing s3/${MLFLOW_BUCKET_NAME:-mlflow} &&
+      /usr/bin/mc mb --ignore-existing s3/${DATA_REPO_BUCKET_NAME:-data}
       '
 
   mlflow:
@@ -196,9 +202,10 @@ services:
     profiles:
       - all
     depends_on:
+      # La API solo necesita el registro de MLflow y MinIO, de donde baja los artefactos
       mlflow:
         condition: service_healthy
-      airflow-apiserver:
+      s3:
         condition: service_healthy
     ports:
       - "${FASTAPI_PORT:-8800}:8800"
@@ -218,7 +225,8 @@ services:
       --host 0.0.0.0
       --port 8800
     healthcheck:
-      test: curl --include --request GET http://fastapi:8800/ || exit 1
+      # Chequea que el proceso responda; si hay modelo cargado lo dice GET /health
+      test: curl --fail --silent http://fastapi:8800/ || exit 1
       interval: 60s
       timeout: 10s
       start_period: 120s
