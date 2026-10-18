@@ -62,7 +62,8 @@ def train_taxi_tip_model():
         deferrable=False,
     )
 
-    @task(task_id="search_hyperparameters")
+    # Sin reintentos: un reintento dejaría en MLflow otro run padre con la búsqueda a medias
+    @task(task_id="search_hyperparameters", retries=0)
     def search_hyperparameters(month: str) -> dict:
         """
         Busca hiperparámetros con Optuna y deja todo en un run padre del experimento.
